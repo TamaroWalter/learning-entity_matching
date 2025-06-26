@@ -60,5 +60,5 @@ for brand in shared_brands:
 matched_df = pd.DataFrame(matches)
 
 # Write matches to a file.
-matched_df.to_csv("matches.csv", index=False)
-print(matched_df.head(10))
+#matched_df.to_csv("matches.csv", index=False)
+print(matched_df.head(100))
