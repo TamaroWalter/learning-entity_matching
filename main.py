@@ -2,30 +2,47 @@ import pandas as pd
 import torch
 from sentence_transformers import SentenceTransformer, util
 
-# 1. Load your data
-# For demo: simulate two product tables
-walmart = pd.DataFrame({
-    'id': ['w1', 'w2'],
-    'name': ['Apple iPhone 12', 'Samsung Galaxy S20']
-})
+# Read the TSV file into a DataFrame
+df = pd.read_csv('amazon_walmart.tsv', sep='\t')
 
-amazon = pd.DataFrame({
-    'id': ['a1', 'a2'],
-    'name': ['iPhone 12 by Apple', 'Galaxy S20 Samsung Smartphone']
-})
+# Separate amazon products and walmart products
+amazon = df[df['dataset'] == 'amazon'].reset_index(drop=True)
+walmart = df[df['dataset'] == 'walmart'].reset_index(drop=True)
 
-# 2. Load model
-model = SentenceTransformer('all-MiniLM-L6-v2')  # Small and fast
 
-# 3. Compute embeddings
-emb_walmart = model.encode(walmart['name'], convert_to_tensor=True)
-emb_amazon = model.encode(amazon['name'], convert_to_tensor=True)
+# Define the ai model.
+model = SentenceTransformer('all-MiniLM-L6-v2')
 
-# 4. Compute cosine similarity
-cos_sim = util.pytorch_cos_sim(emb_walmart, emb_amazon)
 
-# 5. Print most similar matches
-for i in range(len(walmart)):
-    best_match = torch.argmax(cos_sim[i]).item()
-    score = cos_sim[i][best_match].item()
-    print(f"{walmart['name'][i]}  <--->  {amazon['name'][best_match]} (score: {score:.2f})")
+# Create textual representations of the products
+# fillna removes NaN values
+amazon_text = (amazon['title'].fillna('') + ' ' + amazon['brand'].fillna('')).tolist()
+walmart_text = (walmart['title'].fillna('') + ' ' + walmart['brand'].fillna('')).tolist()
+
+# Embed the textual representations to a vector representation
+embedded_amazon = model.encode(amazon_text, convert_to_tensor=True)
+embedded_walmart = model.encode(walmart_text, convert_to_tensor=True)
+
+# Compute cosine similarity between the two sets of embeddings
+# Cosine similarity calculates the cosine of the angle between two vectors
+# cosine = 1 means the vectors are identical, cosine = 0 means they are orthogonal
+cosine_similarity = util.pytorch_cos_sim(embedded_amazon, embedded_walmart)
+
+
+# Now i want to make the matches.
+matches = []
+for i in range(len(amazon)):
+    best_idx = torch.argmax(cosine_similarity[i]).item()
+    best_score = cosine_similarity[i][best_idx].item()
+
+    matches.append({
+        'amazon_id': amazon.iloc[i]['id'],
+        'amazon_title': amazon.iloc[i]['title'],
+        'walmart_id': walmart.iloc[best_idx]['id'],
+        'walmart_title': walmart.iloc[best_idx]['title'],
+        'similarity': best_score
+    })
+
+# Convert to DataFrame and view
+matched_df = pd.DataFrame(matches)
+print(matched_df.head(10))
