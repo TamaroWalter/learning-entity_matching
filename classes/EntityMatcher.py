@@ -1,8 +1,8 @@
 import pandas as pd
 import torch
 import os
+import re
 import sys
-from tabulate import tabulate
 from sentence_transformers import SentenceTransformer, util
 
 # Add parent directory to path to import locallib
@@ -14,12 +14,29 @@ class EntityMatcher:
     def __init__(self):
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.model = SentenceTransformer('all-mpnet-base-v2', device=self.device)
+        self.threshold = 0.93
+
+    def make_text(self, df):
+        return (
+            df['title'].fillna('') + ' ' +
+            df['brand'].fillna('') + ' ' +
+            df['category'].fillna('') + ' ' +
+            df['shortdescr'].fillna('') + ' ' +
+            df['techdetails'].fillna('')
+        ).str.lower()
+
+    def clean(self, text):
+        text = str(text).lower()
+        text = re.sub(r'[^a-z0-9 ]', ' ', text)
+        text = re.sub(r'\s+', ' ', text).strip()
+        return text
 
     def entity_match_amazon_walmart(self):
         # Check if the file is available
-        if (not os.path.exists('amazon_walmart.tsv')):
+        if not os.path.exists('amazon_walmart.tsv'):
             print("File 'amazon_walmart.tsv' not found. Please ensure the file is in the correct directory.")
-            return
+            return None
+        
         
         # Read the TSV file into a DataFrame    
         df = pd.read_csv('amazon_walmart.tsv', sep='\t')
@@ -45,41 +62,39 @@ class EntityMatcher:
             walmart_group = grouped_walmart.get_group(brand) 
 
             # Create textual representations of the products.
-            amazon_text = (amazon_group['title'] + ' ' + amazon_group['brand']).tolist()
-            walmart_text = (walmart_group['title'] + ' ' + walmart_group['brand']).tolist()
+            amazon_text =  self.make_text(amazon_group).apply(self.clean).tolist()
+            walmart_text = self.make_text(walmart_group).apply(self.clean).tolist()
 
-            # Embed the textual representations to a vector representation
-            embedded_amazon = self.model.encode(amazon_text, convert_to_tensor=True,device=self.device, batch_size=64)
-            embedded_walmart = self.model.encode(walmart_text, convert_to_tensor=True, device=self.device, batch_size=64)
+            with torch.no_grad():
+                # Embed the textual representations to a vector representation
+                embedded_amazon = self.model.encode(amazon_text, convert_to_tensor=True, device=self.device, batch_size=64)
+                embedded_walmart = self.model.encode(walmart_text, convert_to_tensor=True, device=self.device, batch_size=64)
 
-            # Compute cosine similarity between the two sets of embeddings
-            # Cosine similarity calculates the cosine of the angle between two vectors
-            # cosine = 1 means the vectors are identical, cosine = 0 means they are orthogonal
-            cosine_similarity = util.pytorch_cos_sim(embedded_amazon, embedded_walmart)
+                # Compute cosine similarity between the two sets of embeddings
+                # Cosine similarity calculates the cosine of the angle between two vectors
+                # cosine = 1 means the vectors are identical, cosine = 0 means they are orthogonal
+                # this is a 2D-array with similarities of each amazon product with walmart product
+                cosine_similarities = util.pytorch_cos_sim(embedded_amazon, embedded_walmart)
 
             ## now find the matches.
 
             for i in range(len(amazon_group)):
-                best_idx = torch.argmax(cosine_similarity[i]).item()
-                best_score = cosine_similarity[i][best_idx].item()
-                matches.append({
-                    'amazon_id': amazon_group.iloc[i]['id'],
-                    'amazon_title': amazon_group.iloc[i]['title'],
-                    'walmart_id': walmart_group.iloc[best_idx]['id'],
-                    'walmart_title': walmart_group.iloc[best_idx]['title'],
-                    'similarity': best_score,
-                    'brand': brand
-                })
+                similarity_row = cosine_similarities[i]
+                best_idx = torch.argmax(similarity_row).item() # Get best ID
+                best_score = similarity_row[best_idx].item() # Get cell from id
+
+                if (best_score >= self.threshold):
+                    amazon_row = amazon_group.iloc[i]
+                    walmart_row = walmart_group.iloc[best_idx]
+                    matches.append({
+                        'amazon_id': amazon_row['id'],
+                        'amazon_title': amazon_row['title'],
+                        'walmart_id':walmart_row['id'],
+                        'walmart_title': walmart_row['title'],
+                        'similarity': best_score,
+                        'brand': brand
+                    })
 
 
         # Convert to DataFrame and view
-        matched_df = pd.DataFrame(matches)
-
-        truncated_df = matched_df.copy()
-        for column in truncated_df.columns:
-            truncated_df[column] = truncated_df[column].apply(truncate)
-
-        return truncated_df
-
-
-
+        return pd.DataFrame(matches)
